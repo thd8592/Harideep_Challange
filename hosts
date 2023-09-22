@@ -1,0 +1,2 @@
+[remote-mc]
+18.216.20.248 ansible_ssh_user=ubuntu ansible_ssh_private_key_file=~/.ssh/k8s-poc-demo.pem

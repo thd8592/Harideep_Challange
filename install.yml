@@ -1,0 +1,119 @@
+---
+- name: Create and Deploy Web Server
+  hosts: remote-mc
+  gather_facts: true
+  become: yes
+  tasks:
+    - name: Update package cache (Debian)
+      apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Update package cache (RedHat)
+      yum:
+        name: '*'
+        state: latest
+      when: ansible_os_family == "RedHat"
+
+    - name: Install Apache and OpenSSL (Debian)
+      apt:
+        name:
+          - apache2
+          - openssl
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install Apache and OpenSSL (RedHat)
+      yum:
+        name:
+          - httpd
+          - mod_ssl
+          - openssl
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Create directory for web content
+      file:
+        path: /var/www/html
+        state: directory
+
+    - name: Create "index.html" file
+      copy:
+        content: "Hello World"
+        dest: /var/www/html/index.html
+
+    - name: Generate a self-signed SSL certificate
+      command: openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/ssl/private/apache-selfsigned.key -out /etc/ssl/certs/apache-selfsigned.crt
+      environment:
+        OPENSSL_CONF: /etc/ssl/openssl.cnf
+      args:
+        creates: /etc/ssl/private/apache-selfsigned.key
+      register: ssl_cert_generation
+      when: ssl_cert_generation is not defined
+
+    - name: Provide certificate information
+      expect:
+        command: openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/ssl/private/apache-selfsigned.key -out /etc/ssl/certs/apache-selfsigned.crt
+        responses:
+          "Country Name": "US"
+          "State or Province Name": "Texas"
+          "Locality Name": "Texas"
+          "Organization Name": "demo"
+          "Organizational Unit Name": "devops"
+          "Common Name": "demo-devops"
+          "Email Address": "dummy@gmail.com"
+        echo: yes
+      when: ssl_cert_generation.rc != 0
+
+    - name: Configure Apache to serve over HTTPS
+      template:
+        src: default-ssl.conf.j2
+        dest: /etc/httpd/conf.d/default-ssl.conf
+      notify:
+        - restart apache
+
+    - name: Enable Apache SSL module (Debian)
+      apache2_module:
+        name: ssl
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Enable the default SSL virtual host (Debian)
+      command: a2ensite default-ssl
+      notify:
+        - restart apache
+      when: ansible_os_family == "Debian"
+
+    - name: Ensure Apache SSL virtual host is configured (RedHat)
+      file:
+        path: /etc/httpd/conf.d/default-ssl.conf
+        state: link
+        force: yes
+        owner: root
+        group: root
+        src: /etc/httpd/conf.d/ssl.conf
+      when: ansible_os_family == "RedHat"
+
+    - name: Redirect HTTP to HTTPS
+      template:
+        src: default.conf.j2
+        dest: /etc/httpd/conf.d/default.conf
+      notify:
+        - restart apache
+
+    - name: Check Apache Configuration Syntax
+      command: apachectl configtest
+      ignore_errors: yes
+      register: apache_configtest_result
+
+    - name: Restart Apache (if config test is successful)
+      systemd:
+        name: apache2
+        state: restarted
+      when: apache_configtest_result.rc == 0
+
+  handlers:
+    - name: restart apache
+      service:
+        name: "{{ 'apache2' if ansible_os_family == 'Debian' else 'httpd' }}"
+        state: restarted
